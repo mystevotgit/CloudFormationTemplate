@@ -1,0 +1,80 @@
+# === FRONTEND CloudFormation Template ===
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Frontend Infrastructure for E-Commerce Platform
+
+Parameters:
+  FrontendBucketName:
+    Type: String
+    Default: ecommerce-client-bucket
+
+Resources:
+  ReactS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref FrontendBucketName
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - Id: ReactOrigin
+            DomainName: !GetAtt ReactS3Bucket.RegionalDomainName
+            S3OriginConfig: {}
+        Enabled: true
+        DefaultCacheBehavior:
+          TargetOriginId: ReactOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          ForwardedValues:
+            QueryString: false
+        DefaultRootObject: index.html
+
+  FrontendPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: FrontendDeployPipeline
+      RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/CodePipelineServiceRole
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                RepositoryName: codepipeline-react
+                BranchName: main
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: FrontendBuildProject
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: 1
+              InputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                BucketName: !Ref ReactS3Bucket
+                Extract: true
