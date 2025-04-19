@@ -22,6 +22,12 @@ Resources:
         IndexDocument: index.html
         ErrorDocument: index.html
 
+  ### S3 Bucket for Backend ###
+  BackendS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BackendBucketName
+
   ### CloudFront Distribution ###
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
