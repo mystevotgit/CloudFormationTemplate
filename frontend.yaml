@@ -1,42 +1,150 @@
-# === FRONTEND CloudFormation Template ===
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Frontend Infrastructure for E-Commerce Platform
+Description: Reusable template to deploy a frontend pipeline (S3 + CloudFront +
+  CodeBuild + CodePipeline)
 
 Parameters:
-  FrontendBucketName:
+  PipelineName:
     Type: String
-    Default: ecommerce-client-bucket
+    Default: frontend-3
+  RepositoryId:
+    Type: String
+    Default: mystevotgit/codepipeline-react
+  BranchName:
+    Type: String
+    Default: main
+  ConnectionArn:
+    Type: String
+    Description: ARN of CodeStar Connection to GitHub
+    Default: arn:aws:codeconnections:us-east-1:175147104274:connection/c23ea6aa-5e3a-4f7d-a6fb-095331c33c61
+  BuildProjectName:
+    Type: String
+    Default: frontend-build-project
 
 Resources:
-  ReactS3Bucket:
+
+  WebsiteBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Ref FrontendBucketName
       WebsiteConfiguration:
         IndexDocument: index.html
         ErrorDocument: index.html
+      AccessControl: Private
+
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Statement:
+          - Action: s3:GetObject
+            Effect: Allow
+            Resource: !Sub ${WebsiteBucket.Arn}/*
+            Principal:
+              Service: cloudfront.amazonaws.com
+
+  CloudFrontOAI:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: Access Identity for S3 Bucket
 
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
       DistributionConfig:
-        Origins:
-          - Id: ReactOrigin
-            DomainName: !GetAtt ReactS3Bucket.RegionalDomainName
-            S3OriginConfig: {}
         Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - DomainName: !GetAtt WebsiteBucket.DomainName
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${CloudFrontOAI}
         DefaultCacheBehavior:
-          TargetOriginId: ReactOrigin
+          TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
           ForwardedValues:
             QueryString: false
-        DefaultRootObject: index.html
+            Cookies:
+              Forward: none
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                Resource: !Sub ${WebsiteBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref BuildProjectName
+      Source:
+        Type: CODEPIPELINE
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        Type: LINUX_CONTAINER
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                  - codebuild:*
+                  - codestar-connections:UseConnection
+                Resource: '*'
 
   FrontendPipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
-      Name: FrontendDeployPipeline
-      RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/CodePipelineServiceRole
+      Name: !Ref PipelineName
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      PipelineType: V2
+      ExecutionMode: QUEUED
+      ArtifactStore:
+        Type: S3
+        Location: !Ref WebsiteBucket
       Stages:
         - Name: Source
           Actions:
@@ -44,13 +152,18 @@ Resources:
               ActionTypeId:
                 Category: Source
                 Owner: AWS
-                Provider: CodeCommit
-                Version: 1
+                Provider: CodeStarSourceConnection
+                Version: '1'
               OutputArtifacts:
-                - Name: SourceOutput
+                - Name: SourceArtifact
               Configuration:
-                RepositoryName: codepipeline-react
-                BranchName: main
+                ConnectionArn: !Ref ConnectionArn
+                FullRepositoryId: !Ref RepositoryId
+                BranchName: !Ref BranchName
+                DetectChanges: 'true'
+                OutputArtifactFormat: CODE_ZIP
+              RunOrder: 1
+              Region: !Ref AWS::Region
         - Name: Build
           Actions:
             - Name: BuildAction
@@ -58,13 +171,15 @@ Resources:
                 Category: Build
                 Owner: AWS
                 Provider: CodeBuild
-                Version: 1
+                Version: '1'
               InputArtifacts:
-                - Name: SourceOutput
+                - Name: SourceArtifact
               OutputArtifacts:
-                - Name: BuildOutput
+                - Name: BuildArtifact
               Configuration:
-                ProjectName: FrontendBuildProject
+                ProjectName: !Ref BuildProjectName
+              RunOrder: 1
+              Region: !Ref AWS::Region
         - Name: Deploy
           Actions:
             - Name: DeployAction
@@ -72,9 +187,20 @@ Resources:
                 Category: Deploy
                 Owner: AWS
                 Provider: S3
-                Version: 1
+                Version: '1'
               InputArtifacts:
-                - Name: BuildOutput
+                - Name: BuildArtifact
               Configuration:
-                BucketName: !Ref ReactS3Bucket
-                Extract: true
+                BucketName: !Ref WebsiteBucket
+                Extract: 'true'
+              RunOrder: 1
+              Region: !Ref AWS::Region
+
+Outputs:
+  WebsiteURL:
+    Description: URL of the hosted frontend via CloudFront
+    Value: !Sub https://${CloudFrontDistribution.DomainName}
+  PipelineName:
+    Value: !Ref FrontendPipeline
+  WebsiteBucket:
+    Value: !Ref WebsiteBucket
