@@ -32,21 +32,29 @@ Resources:
 
   WebsiteBucketPolicy:
     Type: AWS::S3::BucketPolicy
+    DependsOn: CloudFrontDistribution
     Properties:
       Bucket: !Ref WebsiteBucket
       PolicyDocument:
         Statement:
-          - Action: s3:GetObject
-            Effect: Allow
-            Resource: !Sub ${WebsiteBucket.Arn}/*
+          - Effect: Allow
             Principal:
               Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${WebsiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
 
-  CloudFrontOAI:
-    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
     Properties:
-      CloudFrontOriginAccessIdentityConfig:
-        Comment: Access Identity for S3 Bucket
+      OriginAccessControlConfig:
+        Name: frontend-oac
+        Description: Access control for CloudFront to access S3
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
 
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
@@ -55,19 +63,15 @@ Resources:
         Enabled: true
         DefaultRootObject: index.html
         Origins:
-          - DomainName: !GetAtt WebsiteBucket.DomainName
-            Id: S3Origin
-            S3OriginConfig:
-              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${CloudFrontOAI}
+          - Id: S3Origin
+            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            S3OriginConfig: {}
+            OriginAccessControlId: !Ref CloudFrontOAC
         DefaultCacheBehavior:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods:
-            - GET
-            - HEAD
-          CachedMethods:
-            - GET
-            - HEAD
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
           ForwardedValues:
             QueryString: false
             Cookies:
@@ -137,6 +141,7 @@ Resources:
 
   FrontendPipeline:
     Type: AWS::CodePipeline::Pipeline
+    DependsOn: WebsiteBucket
     Properties:
       Name: !Ref PipelineName
       RoleArn: !GetAtt CodePipelineRole.Arn
@@ -199,7 +204,7 @@ Resources:
 Outputs:
   WebsiteURL:
     Description: URL of the hosted frontend via CloudFront
-    Value: !Sub https://${CloudFrontDistribution.DomainName}
+    Value: !Sub https://${CloudFrontDistribution.DomainName}/index.html
   PipelineName:
     Value: !Ref FrontendPipeline
   WebsiteBucket:
