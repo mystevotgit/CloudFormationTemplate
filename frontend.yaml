@@ -19,6 +19,9 @@ Parameters:
   BuildProjectName:
     Type: String
     Default: frontend-build-project
+  FrontendOAC:
+    Type: String
+    Default: frontend-oac-3
 
 Resources:
 
@@ -50,7 +53,7 @@ Resources:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
       OriginAccessControlConfig:
-        Name: frontend-oac
+        Name: !Ref FrontendOAC
         Description: Access control for CloudFront to access S3
         OriginAccessControlOriginType: s3
         SigningBehavior: always
@@ -141,7 +144,9 @@ Resources:
 
   FrontendPipeline:
     Type: AWS::CodePipeline::Pipeline
-    DependsOn: WebsiteBucket
+    DependsOn: 
+      - WebsiteBucket
+      - CodeBuildProject
     Properties:
       Name: !Ref PipelineName
       RoleArn: !GetAtt CodePipelineRole.Arn
